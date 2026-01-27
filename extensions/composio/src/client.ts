@@ -9,11 +9,32 @@ import type {
 } from "./types.js";
 
 /**
- * Composio client wrapper for Clawdbot integration
+ * Tool Router session type from SDK
+ */
+interface ToolRouterSession {
+  sessionId: string;
+  tools: () => Promise<unknown[]>;
+  authorize: (toolkit: string) => Promise<{ url: string }>;
+  toolkits: () => Promise<{
+    items: Array<{
+      slug: string;
+      name: string;
+      connection?: {
+        isActive: boolean;
+        connectedAccount?: { id: string; status: string };
+      };
+    }>;
+  }>;
+  experimental: { assistivePrompt: string };
+}
+
+/**
+ * Composio client wrapper using Tool Router pattern
  */
 export class ComposioClient {
   private client: Composio;
   private config: ComposioConfig;
+  private sessionCache: Map<string, ToolRouterSession> = new Map();
 
   constructor(config: ComposioConfig) {
     if (!config.apiKey) {
@@ -30,6 +51,18 @@ export class ComposioClient {
    */
   private getUserId(overrideUserId?: string): string {
     return overrideUserId || this.config.defaultUserId || "default";
+  }
+
+  /**
+   * Get or create a Tool Router session for a user
+   */
+  private async getSession(userId: string): Promise<ToolRouterSession> {
+    if (this.sessionCache.has(userId)) {
+      return this.sessionCache.get(userId)!;
+    }
+    const session = await this.client.toolRouter.create(userId) as ToolRouterSession;
+    this.sessionCache.set(userId, session);
+    return session;
   }
 
   /**
@@ -50,7 +83,20 @@ export class ComposioClient {
   }
 
   /**
-   * Search for tools matching a query using Composio Tool Router semantic search
+   * Execute a Tool Router meta-tool
+   */
+  private async executeMetaTool(
+    toolName: string,
+    args: Record<string, unknown>
+  ): Promise<{ data?: Record<string, unknown>; successful: boolean; error?: string }> {
+    const response = await this.client.client.tools.execute(toolName, {
+      arguments: args,
+    } as Record<string, unknown>);
+    return response as { data?: Record<string, unknown>; successful: boolean; error?: string };
+  }
+
+  /**
+   * Search for tools matching a query using COMPOSIO_SEARCH_TOOLS
    */
   async searchTools(
     query: string,
@@ -61,41 +107,34 @@ export class ComposioClient {
     }
   ): Promise<ToolSearchResult[]> {
     const userId = this.getUserId(options?.userId);
+    const session = await this.getSession(userId);
 
     try {
-      // Execute COMPOSIO_SEARCH_TOOLS meta-tool for semantic search
-      const response = await this.client.client.tools.execute("COMPOSIO_SEARCH_TOOLS", {
-        arguments: {
-          queries: [{ use_case: query }],
-          session: { generate_id: true },
-        },
-      } as Record<string, unknown>);
+      const response = await this.executeMetaTool("COMPOSIO_SEARCH_TOOLS", {
+        queries: [{ use_case: query }],
+        session: { id: session.sessionId },
+      });
 
-      const data = (response as { data?: Record<string, unknown> })?.data;
-      if (!data) {
-        return [];
+      if (!response.successful || !response.data) {
+        throw new Error(response.error || "Search failed");
       }
 
-      // Extract results from the semantic search response
+      const data = response.data;
       const searchResults = (data.results as Array<{
         primary_tool_slugs?: string[];
         related_tool_slugs?: string[];
-        toolkits?: string[];
       }>) || [];
 
       const toolSchemas = (data.tool_schemas as Record<string, {
         toolkit?: string;
-        tool_slug?: string;
         description?: string;
         input_schema?: Record<string, unknown>;
       }>) || {};
 
-      // Build results from primary and related tools
       const results: ToolSearchResult[] = [];
       const seenSlugs = new Set<string>();
 
       for (const result of searchResults) {
-        // Add primary tools first
         const allSlugs = [
           ...(result.primary_tool_slugs || []),
           ...(result.related_tool_slugs || []),
@@ -108,10 +147,8 @@ export class ComposioClient {
           const schema = toolSchemas[slug];
           const toolkit = schema?.toolkit || slug.split("_")[0] || "";
 
-          // Filter by allowed toolkits
           if (!this.isToolkitAllowed(toolkit)) continue;
 
-          // Filter by requested toolkits if specified
           if (options?.toolkits && options.toolkits.length > 0) {
             if (!options.toolkits.some(t => t.toLowerCase() === toolkit.toLowerCase())) {
               continue;
@@ -141,7 +178,7 @@ export class ComposioClient {
   }
 
   /**
-   * Execute a single tool
+   * Execute a single tool using COMPOSIO_MULTI_EXECUTE_TOOL
    */
   async executeTool(
     toolSlug: string,
@@ -149,22 +186,43 @@ export class ComposioClient {
     userId?: string
   ): Promise<ToolExecutionResult> {
     const uid = this.getUserId(userId);
+    const session = await this.getSession(uid);
+
+    const toolkit = toolSlug.split("_")[0]?.toLowerCase() || "";
+    if (!this.isToolkitAllowed(toolkit)) {
+      return {
+        success: false,
+        error: `Toolkit '${toolkit}' is not allowed by plugin configuration`,
+      };
+    }
 
     try {
-      // Extract toolkit from tool slug (format: TOOLKIT_ACTION)
-      const toolkit = toolSlug.split("_")[0]?.toLowerCase() || "";
-      if (!this.isToolkitAllowed(toolkit)) {
-        return {
-          success: false,
-          error: `Toolkit '${toolkit}' is not allowed by plugin configuration`,
-        };
+      const response = await this.executeMetaTool("COMPOSIO_MULTI_EXECUTE_TOOL", {
+        tools: [{ slug: toolSlug, arguments: args }],
+        session: { id: session.sessionId },
+        sync_response_to_workbench: false,
+      });
+
+      if (!response.successful) {
+        return { success: false, error: response.error || "Execution failed" };
       }
 
-      const result = await this.client.tools.execute(uid, toolSlug, args);
+      const results = (response.data?.results as Array<{
+        tool_slug: string;
+        successful: boolean;
+        data?: unknown;
+        error?: string;
+      }>) || [];
+
+      const result = results[0];
+      if (!result) {
+        return { success: false, error: "No result returned" };
+      }
 
       return {
-        success: true,
-        data: result,
+        success: result.successful,
+        data: result.data,
+        error: result.error,
       };
     } catch (err) {
       return {
@@ -175,83 +233,112 @@ export class ComposioClient {
   }
 
   /**
-   * Execute multiple tools in parallel
+   * Execute multiple tools in parallel using COMPOSIO_MULTI_EXECUTE_TOOL
    */
   async multiExecute(
     executions: MultiExecutionItem[],
     userId?: string
   ): Promise<MultiExecutionResult> {
     const uid = this.getUserId(userId);
+    const session = await this.getSession(uid);
 
-    // Limit to 50 executions
-    const limitedExecutions = executions.slice(0, 50);
-
-    const results = await Promise.all(
-      limitedExecutions.map(async (exec) => {
-        const result = await this.executeTool(exec.tool_slug, exec.arguments, uid);
-        return {
-          tool_slug: exec.tool_slug,
-          ...result,
-        };
+    // Filter out blocked toolkits and limit to 50
+    const allowedExecutions = executions
+      .filter(exec => {
+        const toolkit = exec.tool_slug.split("_")[0]?.toLowerCase() || "";
+        return this.isToolkitAllowed(toolkit);
       })
-    );
+      .slice(0, 50);
 
-    return { results };
+    if (allowedExecutions.length === 0) {
+      return { results: [] };
+    }
+
+    try {
+      const response = await this.executeMetaTool("COMPOSIO_MULTI_EXECUTE_TOOL", {
+        tools: allowedExecutions.map(exec => ({
+          slug: exec.tool_slug,
+          arguments: exec.arguments,
+        })),
+        session: { id: session.sessionId },
+        sync_response_to_workbench: false,
+      });
+
+      if (!response.successful) {
+        return {
+          results: allowedExecutions.map(exec => ({
+            tool_slug: exec.tool_slug,
+            success: false,
+            error: response.error || "Execution failed",
+          })),
+        };
+      }
+
+      const apiResults = (response.data?.results as Array<{
+        tool_slug: string;
+        successful: boolean;
+        data?: unknown;
+        error?: string;
+      }>) || [];
+
+      return {
+        results: apiResults.map(r => ({
+          tool_slug: r.tool_slug,
+          success: r.successful,
+          data: r.data,
+          error: r.error,
+        })),
+      };
+    } catch (err) {
+      return {
+        results: allowedExecutions.map(exec => ({
+          tool_slug: exec.tool_slug,
+          success: false,
+          error: err instanceof Error ? err.message : String(err),
+        })),
+      };
+    }
   }
 
   /**
-   * Get connection status for toolkits
+   * Get connection status for toolkits using session.toolkits()
    */
   async getConnectionStatus(
     toolkits?: string[],
     userId?: string
   ): Promise<ConnectionStatus[]> {
     const uid = this.getUserId(userId);
-
-    // Connection item type from API response
-    type ConnectionItem = {
-      toolkit?: { slug?: string };
-      status?: string;
-      id?: string;
-    };
+    const session = await this.getSession(uid);
 
     try {
-      const response = await this.client.connectedAccounts.list({
-        userId: uid,
-      });
-
-      // Handle both array and {items: [...]} response formats
-      const connections = (
-        Array.isArray(response)
-          ? response
-          : (response as { items?: unknown[] })?.items || []
-      ) as ConnectionItem[];
-
-      // Only consider ACTIVE connections as "connected"
-      const activeConnections = connections.filter((c) => c.status === "ACTIVE");
+      const response = await session.toolkits();
+      const allToolkits = response.items || [];
 
       const statuses: ConnectionStatus[] = [];
-      const connectedToolkits = new Set(
-        activeConnections.map((c) => c.toolkit?.slug?.toLowerCase())
-      );
 
-      // If specific toolkits requested, check those
       if (toolkits && toolkits.length > 0) {
+        // Check specific toolkits
         for (const toolkit of toolkits) {
           if (!this.isToolkitAllowed(toolkit)) continue;
+
+          const found = allToolkits.find(
+            t => t.slug.toLowerCase() === toolkit.toLowerCase()
+          );
+
           statuses.push({
             toolkit,
-            connected: connectedToolkits.has(toolkit.toLowerCase()),
+            connected: found?.connection?.isActive ?? false,
             userId: uid,
           });
         }
       } else {
-        // Return all connected toolkits (only active ones)
-        for (const conn of activeConnections) {
-          const toolkit = conn.toolkit?.slug || "";
-          if (!toolkit || !this.isToolkitAllowed(toolkit)) continue;
+        // Return all connected toolkits
+        for (const tk of allToolkits) {
+          if (!this.isToolkitAllowed(tk.slug)) continue;
+          if (!tk.connection?.isActive) continue;
+
           statuses.push({
-            toolkit,
+            toolkit: tk.slug,
             connected: true,
             userId: uid,
           });
@@ -267,7 +354,7 @@ export class ComposioClient {
   }
 
   /**
-   * Create an auth connection for a toolkit
+   * Create an auth connection for a toolkit using session.authorize()
    */
   async createConnection(
     toolkit: string,
@@ -280,17 +367,9 @@ export class ComposioClient {
     }
 
     try {
-      const authConfig = await this.client.authConfigs.create({
-        appName: toolkit.toUpperCase(),
-        useComposioManagedAuth: true,
-      });
-
-      const connection = await this.client.connectedAccounts.initiate({
-        authConfigId: authConfig.id,
-        userId: uid,
-      });
-
-      return { authUrl: connection.connectionUrl || "" };
+      const session = await this.getSession(uid);
+      const result = await session.authorize(toolkit);
+      return { authUrl: result.url };
     } catch (err) {
       return {
         error: err instanceof Error ? err.message : String(err),
@@ -301,16 +380,18 @@ export class ComposioClient {
   /**
    * List available toolkits
    */
-  async listToolkits(): Promise<string[]> {
+  async listToolkits(userId?: string): Promise<string[]> {
+    const uid = this.getUserId(userId);
+
     try {
-      // Use low-level client for better error messages
-      const response = await this.client.client.toolkits.list();
-      const toolkits = response?.items || [];
-      return toolkits
-        .map((tk: { slug?: string; name?: string }) => tk.slug || tk.name || "")
-        .filter((name: string) => name && this.isToolkitAllowed(name));
+      const session = await this.getSession(uid);
+      const response = await session.toolkits();
+      const allToolkits = response.items || [];
+
+      return allToolkits
+        .map(tk => tk.slug)
+        .filter(slug => this.isToolkitAllowed(slug));
     } catch (err: unknown) {
-      // Try to extract detailed error from Composio API response
       const errObj = err as { status?: number; error?: { error?: { message?: string } } };
       if (errObj?.status === 401) {
         throw new Error("Invalid Composio API key. Get a valid key from platform.composio.dev/settings");
@@ -331,27 +412,16 @@ export class ComposioClient {
   ): Promise<{ success: boolean; error?: string }> {
     const uid = this.getUserId(userId);
 
-    // Connection item type from API response
-    type ConnectionItem = {
-      toolkit?: { slug?: string };
-      status?: string;
-      id: string;
-    };
-
     try {
-      const response = await this.client.connectedAccounts.list({
-        userId: uid,
-      });
-
-      // Handle both array and {items: [...]} response formats
+      const response = await this.client.connectedAccounts.list({ userId: uid });
       const connections = (
         Array.isArray(response)
           ? response
           : (response as { items?: unknown[] })?.items || []
-      ) as ConnectionItem[];
+      ) as Array<{ toolkit?: { slug?: string }; id: string }>;
 
       const conn = connections.find(
-        (c) => c.toolkit?.slug?.toLowerCase() === toolkit.toLowerCase()
+        c => c.toolkit?.slug?.toLowerCase() === toolkit.toLowerCase()
       );
 
       if (!conn) {
@@ -359,6 +429,10 @@ export class ComposioClient {
       }
 
       await this.client.connectedAccounts.delete({ connectedAccountId: conn.id });
+
+      // Clear session cache to refresh connection status
+      this.sessionCache.delete(uid);
+
       return { success: true };
     } catch (err) {
       return {
@@ -366,6 +440,15 @@ export class ComposioClient {
         error: err instanceof Error ? err.message : String(err),
       };
     }
+  }
+
+  /**
+   * Get the assistive prompt for the agent
+   */
+  async getAssistivePrompt(userId?: string): Promise<string> {
+    const uid = this.getUserId(userId);
+    const session = await this.getSession(uid);
+    return session.experimental.assistivePrompt;
   }
 }
 
