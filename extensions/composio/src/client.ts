@@ -70,25 +70,33 @@ export class ComposioClient {
         toolkits = toolkits.filter((t) => this.isToolkitAllowed(t));
       }
 
+      // Pass search query to API - at least one of tools/toolkits/search is required
       const tools = await this.client.tools.get(userId, {
+        search: query,
         ...(toolkits && toolkits.length > 0 ? { toolkits } : {}),
       });
 
-      // Filter and map results
+      // Filter and map results - API returns OpenAI function calling format
       const results: ToolSearchResult[] = [];
       for (const tool of tools) {
-        if (!this.isToolkitAllowed(tool.appName || "")) continue;
+        // Handle OpenAI function format: { type: "function", function: { name, description, parameters } }
+        const fn = (tool as { function?: { name?: string; description?: string; parameters?: Record<string, unknown> } }).function;
+        const name = fn?.name || (tool as { name?: string }).name || "";
+        const description = fn?.description || (tool as { description?: string }).description || "";
+        const parameters = fn?.parameters || (tool as { parameters?: Record<string, unknown> }).parameters || {};
 
-        // Simple query matching on name and description
-        const searchText = `${tool.name} ${tool.description}`.toLowerCase();
-        if (query && !searchText.includes(query.toLowerCase())) continue;
+        // Extract toolkit from tool name (format: TOOLKIT_ACTION or _TOOLKIT_ACTION)
+        const parts = name.replace(/^_/, "").split("_");
+        const toolkit = parts[0] || "";
+
+        if (!this.isToolkitAllowed(toolkit)) continue;
 
         results.push({
-          name: tool.name,
-          slug: tool.name, // Composio uses name as slug
-          description: tool.description || "",
-          toolkit: tool.appName || "",
-          parameters: tool.parameters || {},
+          name,
+          slug: name,
+          description,
+          toolkit,
+          parameters,
         });
 
         if (results.length >= limit) break;
@@ -170,14 +178,31 @@ export class ComposioClient {
   ): Promise<ConnectionStatus[]> {
     const uid = this.getUserId(userId);
 
+    // Connection item type from API response
+    type ConnectionItem = {
+      toolkit?: { slug?: string };
+      status?: string;
+      id?: string;
+    };
+
     try {
-      const connections = await this.client.connectedAccounts.list({
+      const response = await this.client.connectedAccounts.list({
         userId: uid,
       });
 
+      // Handle both array and {items: [...]} response formats
+      const connections = (
+        Array.isArray(response)
+          ? response
+          : (response as { items?: unknown[] })?.items || []
+      ) as ConnectionItem[];
+
+      // Only consider ACTIVE connections as "connected"
+      const activeConnections = connections.filter((c) => c.status === "ACTIVE");
+
       const statuses: ConnectionStatus[] = [];
       const connectedToolkits = new Set(
-        connections.map((c: { appName?: string }) => c.appName?.toLowerCase())
+        activeConnections.map((c) => c.toolkit?.slug?.toLowerCase())
       );
 
       // If specific toolkits requested, check those
@@ -191,10 +216,10 @@ export class ComposioClient {
           });
         }
       } else {
-        // Return all connected toolkits
-        for (const conn of connections) {
-          const toolkit = conn.appName || "";
-          if (!this.isToolkitAllowed(toolkit)) continue;
+        // Return all connected toolkits (only active ones)
+        for (const conn of activeConnections) {
+          const toolkit = conn.toolkit?.slug || "";
+          if (!toolkit || !this.isToolkitAllowed(toolkit)) continue;
           statuses.push({
             toolkit,
             connected: true,
@@ -276,13 +301,27 @@ export class ComposioClient {
   ): Promise<{ success: boolean; error?: string }> {
     const uid = this.getUserId(userId);
 
+    // Connection item type from API response
+    type ConnectionItem = {
+      toolkit?: { slug?: string };
+      status?: string;
+      id: string;
+    };
+
     try {
-      const connections = await this.client.connectedAccounts.list({
+      const response = await this.client.connectedAccounts.list({
         userId: uid,
       });
 
+      // Handle both array and {items: [...]} response formats
+      const connections = (
+        Array.isArray(response)
+          ? response
+          : (response as { items?: unknown[] })?.items || []
+      ) as ConnectionItem[];
+
       const conn = connections.find(
-        (c: { appName?: string }) => c.appName?.toLowerCase() === toolkit.toLowerCase()
+        (c) => c.toolkit?.slug?.toLowerCase() === toolkit.toLowerCase()
       );
 
       if (!conn) {
