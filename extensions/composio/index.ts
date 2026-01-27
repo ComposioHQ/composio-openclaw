@@ -61,45 +61,33 @@ const composioPlugin = {
     };
 
     // Register tools (lazily create client on first use)
-    api.registerTool(
-      {
-        ...createComposioSearchTool(ensureClient(), config),
-        execute: async (toolCallId, params) => {
-          return createComposioSearchTool(ensureClient(), config).execute(toolCallId, params);
-        },
+    api.registerTool({
+      ...createComposioSearchTool(ensureClient(), config),
+      execute: async (toolCallId, params) => {
+        return createComposioSearchTool(ensureClient(), config).execute(toolCallId, params);
       },
-      { optional: true }
-    );
+    });
 
-    api.registerTool(
-      {
-        ...createComposioExecuteTool(ensureClient(), config),
-        execute: async (toolCallId, params) => {
-          return createComposioExecuteTool(ensureClient(), config).execute(toolCallId, params);
-        },
+    api.registerTool({
+      ...createComposioExecuteTool(ensureClient(), config),
+      execute: async (toolCallId, params) => {
+        return createComposioExecuteTool(ensureClient(), config).execute(toolCallId, params);
       },
-      { optional: true }
-    );
+    });
 
-    api.registerTool(
-      {
-        ...createComposioMultiExecuteTool(ensureClient(), config),
-        execute: async (toolCallId, params) => {
-          return createComposioMultiExecuteTool(ensureClient(), config).execute(toolCallId, params);
-        },
+    api.registerTool({
+      ...createComposioMultiExecuteTool(ensureClient(), config),
+      execute: async (toolCallId, params) => {
+        return createComposioMultiExecuteTool(ensureClient(), config).execute(toolCallId, params);
       },
-      { optional: true }
-    );
+    });
 
-    api.registerTool(
-      {
-        ...createComposioConnectionsTool(ensureClient(), config),
-        execute: async (toolCallId, params) => {
-          return createComposioConnectionsTool(ensureClient(), config).execute(toolCallId, params);
-        },
+    api.registerTool({
+      ...createComposioConnectionsTool(ensureClient(), config),
+      execute: async (toolCallId, params) => {
+        return createComposioConnectionsTool(ensureClient(), config).execute(toolCallId, params);
       },
-      { optional: true }
-    );
+    });
 
     // Register CLI commands
     api.registerCli(
