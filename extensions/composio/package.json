@@ -1,0 +1,14 @@
+{
+  "name": "@clawdbot/composio",
+  "version": "2026.1.25",
+  "type": "module",
+  "description": "Composio Tool Router integration for Clawdbot - access 1000+ third-party tools",
+  "dependencies": {
+    "@composio/core": "^0.5.5",
+    "@sinclair/typebox": "0.34.47",
+    "zod": "^4.3.6"
+  },
+  "clawdbot": {
+    "extensions": ["./index.ts"]
+  }
+}
