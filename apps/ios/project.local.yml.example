@@ -1,0 +1,70 @@
+name: OpenClaw
+options:
+  bundleIdPrefix: ai.openclaw
+  deploymentTarget:
+    iOS: "18.0"
+  xcodeVersion: "16.0"
+
+settings:
+  base:
+    SWIFT_VERSION: "6.0"
+
+packages:
+  OpenClawKit:
+    path: ../shared/OpenClawKit
+  Swabble:
+    path: ../../Swabble
+
+schemes:
+  OpenClaw:
+    shared: true
+    build:
+      targets:
+        OpenClaw: all
+    test:
+      targets:
+        - OpenClawTests
+
+targets:
+  OpenClaw:
+    type: application
+    platform: iOS
+    sources:
+      - path: Sources
+    dependencies:
+      - package: OpenClawKit
+      - package: OpenClawKit
+        product: OpenClawChatUI
+      - package: OpenClawKit
+        product: OpenClawProtocol
+      - package: Swabble
+        product: SwabbleKit
+      - sdk: AppIntents.framework
+    settings:
+      base:
+        CODE_SIGN_IDENTITY: "Apple Development"
+        CODE_SIGN_STYLE: Automatic
+        DEVELOPMENT_TEAM: YOUR_TEAM_ID
+        PRODUCT_BUNDLE_IDENTIFIER: ai.openclaw.ios.dev.YOURNAME.test
+        SWIFT_VERSION: "6.0"
+        SWIFT_STRICT_CONCURRENCY: complete
+        ENABLE_APPINTENTS_METADATA: NO
+
+  OpenClawTests:
+    type: bundle.unit-test
+    platform: iOS
+    sources:
+      - path: Tests
+    dependencies:
+      - target: OpenClaw
+      - package: Swabble
+        product: SwabbleKit
+      - sdk: AppIntents.framework
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: ai.openclaw.ios.dev.YOURNAME.test.tests
+        SWIFT_VERSION: "6.0"
+        SWIFT_STRICT_CONCURRENCY: complete
+        TEST_HOST: "$(BUILT_PRODUCTS_DIR)/OpenClaw.app/OpenClaw"
+        BUNDLE_LOADER: "$(TEST_HOST)"
+

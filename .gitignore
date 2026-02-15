@@ -67,6 +67,9 @@ apps/ios/*.dSYM.zip
 # provisioning profiles (local)
 apps/ios/*.mobileprovision
 
+# iOS local signing config (xcodegen spec override)
+apps/ios/project.local.yml
+
 # Local untracked files
 .local/
 docs/.local/
