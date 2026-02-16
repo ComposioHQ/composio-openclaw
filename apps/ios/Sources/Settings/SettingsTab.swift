@@ -32,6 +32,12 @@ struct SettingsTab: View {
     @AppStorage("gateway.manual.tls") private var manualGatewayTLS: Bool = true
     @AppStorage("gateway.discovery.debugLogs") private var discoveryDebugLogsEnabled: Bool = false
     @AppStorage("canvas.debugStatusEnabled") private var canvasDebugStatusEnabled: Bool = false
+
+    // Onboarding control (RootCanvas listens to onboarding.requestID and force-opens the wizard).
+    @AppStorage("onboarding.requestID") private var onboardingRequestID: Int = 0
+    @AppStorage("gateway.onboardingComplete") private var onboardingComplete: Bool = false
+    @AppStorage("gateway.hasConnectedOnce") private var hasConnectedOnce: Bool = false
+
     @State private var connectingGatewayID: String?
     @State private var localIPAddress: String?
     @State private var lastLocationModeRaw: String = OpenClawLocationMode.off.rawValue
@@ -43,6 +49,9 @@ struct SettingsTab: View {
     @State private var manualGatewayPortText: String = ""
     @State private var gatewayExpanded: Bool = true
     @State private var selectedAgentPickerId: String = ""
+
+    @State private var showResetOnboardingAlert: Bool = false
+    @State private var suppressCredentialPersist: Bool = false
 
     private let gatewayLogger = Logger(subsystem: "ai.openclaw.ios", category: "GatewaySettings")
 
@@ -204,6 +213,10 @@ struct SettingsTab: View {
 
                             SecureField("Gateway Password", text: self.$gatewayPassword)
 
+                            Button("Reset Onboarding", role: .destructive) {
+                                self.showResetOnboardingAlert = true
+                            }
+
                             VStack(alignment: .leading, spacing: 6) {
                                 Text("Debug")
                                     .font(.footnote.weight(.semibold))
@@ -327,6 +340,15 @@ struct SettingsTab: View {
                     .accessibilityLabel("Close")
                 }
             }
+            .alert("Reset Onboarding?", isPresented: self.$showResetOnboardingAlert) {
+                Button("Reset", role: .destructive) {
+                    self.resetOnboarding()
+                }
+                Button("Cancel", role: .cancel) {}
+            } message: {
+                Text(
+                    "This will disconnect, clear saved gateway connection + credentials, and reopen the onboarding wizard.")
+            }
             .onAppear {
                 self.localIPAddress = Self.primaryIPv4Address()
                 self.lastLocationModeRaw = self.locationEnabledModeRaw
@@ -356,12 +378,14 @@ struct SettingsTab: View {
                 GatewaySettingsStore.savePreferredGatewayStableID(trimmed)
             }
             .onChange(of: self.gatewayToken) { _, newValue in
+                guard !self.suppressCredentialPersist else { return }
                 let trimmed = newValue.trimmingCharacters(in: .whitespacesAndNewlines)
                 let instanceId = self.instanceId.trimmingCharacters(in: .whitespacesAndNewlines)
                 guard !instanceId.isEmpty else { return }
                 GatewaySettingsStore.saveGatewayToken(trimmed, instanceId: instanceId)
             }
             .onChange(of: self.gatewayPassword) { _, newValue in
+                guard !self.suppressCredentialPersist else { return }
                 let trimmed = newValue.trimmingCharacters(in: .whitespacesAndNewlines)
                 let instanceId = self.instanceId.trimmingCharacters(in: .whitespacesAndNewlines)
                 guard !instanceId.isEmpty else { return }
@@ -992,6 +1016,44 @@ struct SettingsTab: View {
 
     private static func httpURLString(host: String?, port: Int?, fallback: String) -> String {
         SettingsNetworkingHelpers.httpURLString(host: host, port: port, fallback: fallback)
+    }
+
+    private func resetOnboarding() {
+        // Disconnect first so RootCanvas doesn't instantly mark onboarding complete again.
+        self.appModel.disconnectGateway()
+        self.connectingGatewayID = nil
+        self.setupStatusText = nil
+        self.setupCode = ""
+        self.gatewayAutoConnect = false
+
+        self.suppressCredentialPersist = true
+        defer { self.suppressCredentialPersist = false }
+
+        self.gatewayToken = ""
+        self.gatewayPassword = ""
+
+        let trimmedInstanceId = self.instanceId.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !trimmedInstanceId.isEmpty {
+            GatewaySettingsStore.deleteGatewayCredentials(instanceId: trimmedInstanceId)
+        }
+
+        // Reset onboarding state + clear saved gateway connection (the two things RootCanvas checks).
+        GatewaySettingsStore.clearLastGatewayConnection()
+        OnboardingStateStore.markIncomplete()
+
+        // RootCanvas also short-circuits onboarding when these are true.
+        self.onboardingComplete = false
+        self.hasConnectedOnce = false
+
+        // Clear manual override so it doesn't count as an existing gateway config.
+        self.manualGatewayEnabled = false
+        self.manualGatewayHost = ""
+
+        // Force re-present even without app restart.
+        self.onboardingRequestID += 1
+
+        // The onboarding wizard is presented from RootCanvas; dismiss Settings so it can show.
+        self.dismiss()
     }
 
     private func gatewayDetailLines(_ gateway: GatewayDiscoveryModel.DiscoveredGateway) -> [String] {
