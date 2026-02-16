@@ -1,3 +1,34 @@
+<p align="center">
+  <img src="./logo-banner.jpeg" alt="Composio OpenClaw Banner" width="100%">
+</p>
+
+# Composio OpenClaw
+
+**Composio OpenClaw** is the Composio fork of [OpenClaw](https://github.com/clawdbot/clawdbot), kept up to date with upstream and including the Composio plugin in-repo.
+
+## Why this fork exists
+
+- Includes the Composio Tool Router plugin at `extensions/composio`
+- Adds `clawdbot composio ...` CLI commands for toolkit search and connection management
+- Lets you use Composio-managed auth for tools like Gmail, GitHub, Slack, Notion, and more
+
+## Composio Quick Start
+
+```bash
+# Get a key from https://platform.composio.dev/settings
+export COMPOSIO_API_KEY=your-api-key
+
+# Enable the plugin in Clawdbot config
+clawdbot config set plugins.composio.enabled true
+
+# Validate plugin access
+clawdbot composio list
+```
+
+For full plugin docs and examples, see [extensions/composio/README.md](./extensions/composio/README.md).
+
+---
+
 # 🦞 Clawdbot — Personal AI Assistant
 
 <p align="center">
